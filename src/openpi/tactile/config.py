@@ -88,29 +88,30 @@ _CONFIGS = [
     training_config.TrainConfig(
         name="pi05_kaihand_card_concat",
         project_name="openpi-tactile",
-        exp_name="concat",
+        exp_name="card-concat",
         model=pi0_config.Pi0Config(
             action_horizon=16,
             pi05=True,
             discrete_state_input=True,
         ),
         data=CardTactileDataConfig(
-            repo_id="0914_200",
-            dataset_root="/nas/chenxianchi/datasets/sim/card/pi05/0914_200",
-            tactile_sidecar_dir="/nas/chenxianchi/datasets/sim/card/pi05/0914_200/tactile",
+            repo_id="YOUR_LEROBOT_REPO_ID",
+            dataset_root="/path/to/lerobot/YOUR_LEROBOT_REPO_ID",
+            tactile_sidecar_dir="/path/to/lerobot/YOUR_LEROBOT_REPO_ID/tactile",
             assets=training_config.AssetsConfig(
-                assets_dir=(
-                    "/nas/chenxianchi/datasets/sim/card/pi05/0914_200/checkpoints/"
-                    "pi05_kaihand_card_0914_200/card_full_0914_200_fsdp8/5000/assets"
-                ),
-                asset_id="0914_200",
+                # This directory must contain YOUR_LEROBOT_REPO_ID/norm_stats.json.
+                assets_dir="/path/to/checkpoint/assets",
+                asset_id="YOUR_LEROBOT_REPO_ID",
             ),
             base_config=training_config.DataConfig(prompt_from_task=True),
         ),
         pytorch_weight_path="/oss/yeqianyu/pi05_base",
         checkpoint_base_dir="/oss/yeqianyu/openpi-checkpoints",
         batch_size=32,
-        fsdp_devices=8,
+        num_workers=2,
+        num_train_steps=30_000,
+        log_interval=100,
+        save_interval=1_000,
     ),
 ]
 
