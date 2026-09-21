@@ -7,7 +7,7 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+from lerobot.datasets import lerobot_dataset
 import numpy as np
 import torch
 
@@ -137,16 +137,22 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    root_kwargs = {"root": data_config.lerobot_root} if data_config.lerobot_root is not None else {}
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, **root_kwargs)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        **root_kwargs,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
 
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        tasks = dataset_meta.tasks
+        if not isinstance(tasks, dict):
+            task_indices = tasks["task_index"].to_dict()
+            tasks = {int(task_index): str(prompt) for prompt, task_index in task_indices.items()}
+        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(tasks)])
 
     return dataset
 

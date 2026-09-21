@@ -7,7 +7,8 @@ import dataclasses
 import numpy as np
 
 from openpi import transforms
-from openpi.tactile.data import schema
+
+NUM_RIGHT_FINGERS = 5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -23,13 +24,13 @@ class ConcatTactileState(transforms.DataTransformFn):
     joint_dim: int = 27
 
     def __post_init__(self) -> None:
-        if len(self.q01) != schema.NUM_RIGHT_FINGERS or len(self.q99) != schema.NUM_RIGHT_FINGERS:
+        if len(self.q01) != NUM_RIGHT_FINGERS or len(self.q99) != NUM_RIGHT_FINGERS:
             raise ValueError("Tactile quantiles must contain one value per right-hand finger")
 
     def __call__(self, data: transforms.DataDict) -> transforms.DataDict:
         tactile = data.get("tactile")
         if tactile is None:
-            raise ValueError("ConcatTactileState requires a tactile sidecar sample")
+            raise ValueError("ConcatTactileState requires a tactile sample")
 
         state = np.asarray(data["state"], dtype=np.float32)
         if state.shape[-1] < self.joint_dim:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import pathlib
 
 import jax
@@ -26,10 +25,6 @@ def evaluate_flow_loss(
     if not weight_path.exists():
         raise FileNotFoundError(weight_path)
 
-    dataset_root = pathlib.Path(config.data.dataset_root)  # type: ignore[attr-defined]
-    if dataset_root.name != config.data.repo_id:
-        raise ValueError(f"dataset_root must end in repo_id ({config.data.repo_id!r}): {dataset_root}")
-    os.environ["HF_LEROBOT_HOME"] = str(dataset_root.parent)
     from openpi.training import data_loader
 
     torch_device = torch.device(device)
