@@ -14,6 +14,7 @@ from openpi import transforms
 from openpi.models import model as model_base
 from openpi.shared import normalize
 from openpi.tactile.data import kaihand
+from openpi.tactile.data.transforms import ClipNormalizedStateAndActions
 from openpi.tactile.data.transforms import ConcatTactileState
 from openpi.training import config as training_config
 
@@ -67,6 +68,7 @@ class KaiHandTactileDataConfig(training_config.DataConfigFactory):
         base_model_transforms = training_config.ModelTransformFactory()(model_config)
         model_transforms = transforms.Group(
             inputs=[
+                ClipNormalizedStateAndActions(),
                 ConcatTactileState(
                     q01=tuple(tactile_stats["q01"]),
                     q99=tuple(tactile_stats["q99"]),

@@ -12,6 +12,17 @@ NUM_RIGHT_FINGERS = 5
 
 
 @dataclasses.dataclass(frozen=True)
+class ClipNormalizedStateAndActions(transforms.DataTransformFn):
+    """Clip quantile-normalized robot values to their intended range."""
+
+    def __call__(self, data: transforms.DataDict) -> transforms.DataDict:
+        data["state"] = np.clip(np.asarray(data["state"], dtype=np.float32), -1.0, 1.0)
+        if "actions" in data:
+            data["actions"] = np.clip(np.asarray(data["actions"], dtype=np.float32), -1.0, 1.0)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class ConcatTactileState(transforms.DataTransformFn):
     """Append normalized five-finger force to the normalized 27-d robot state.
 
