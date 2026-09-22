@@ -33,6 +33,10 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     pytorch_compile_mode: str | None = "max-autotune"
+    # PyTorch-only native taxel conditioning. Five encoded finger tokens are
+    # prepended to the PI0.5 action suffix.
+    use_taxel: bool = False
+    taxel_force_scale: float = 1.0
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -66,21 +70,24 @@ class Pi0Config(_model.BaseModelConfig):
         image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
 
         with at.disable_typechecking():
-            observation_spec = _model.Observation(
-                images={
+            observation_kwargs = {
+                "images": {
                     "base_0_rgb": image_spec,
                     "left_wrist_0_rgb": image_spec,
                     "right_wrist_0_rgb": image_spec,
                 },
-                image_masks={
+                "image_masks": {
                     "base_0_rgb": image_mask_spec,
                     "left_wrist_0_rgb": image_mask_spec,
                     "right_wrist_0_rgb": image_mask_spec,
                 },
-                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
-                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
-                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
-            )
+                "state": jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+                "tokenized_prompt": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+                "tokenized_prompt_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+            }
+            if self.use_taxel:
+                observation_kwargs["taxel_force"] = jax.ShapeDtypeStruct([batch_size, 5, 7, 5, 3], jnp.float32)
+            observation_spec = _model.Observation(**observation_kwargs)
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
         return observation_spec, action_spec
