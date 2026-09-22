@@ -391,20 +391,10 @@ def train_loop(config: _config.TrainConfig):
 
     # Build model
     if not isinstance(config.model, openpi.models.pi0_config.Pi0Config):
-        # Convert dataclass to Pi0Config if needed
-        model_cfg = openpi.models.pi0_config.Pi0Config(
-            dtype=config.pytorch_training_precision,
-            action_dim=config.model.action_dim,
-            action_horizon=config.model.action_horizon,
-            max_token_len=config.model.max_token_len,
-            paligemma_variant=getattr(config.model, "paligemma_variant", "gemma_2b"),
-            action_expert_variant=getattr(config.model, "action_expert_variant", "gemma_300m"),
-            pi05=getattr(config.model, "pi05", False),
-        )
-    else:
-        model_cfg = config.model
-        # Update dtype to match pytorch_training_precision
-        object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
+        raise TypeError(f"PyTorch tactile training requires Pi0Config, got {type(config.model).__name__}")
+    model_cfg = config.model
+    # Update dtype to match pytorch_training_precision
+    object.__setattr__(model_cfg, "dtype", config.pytorch_training_precision)
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
 
@@ -429,6 +419,27 @@ def train_loop(config: _config.TrainConfig):
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
         logging.info("Enabled memory optimizations for 8+ GPU training")
 
+    train_stage = config.pytorch_train_stage
+    taxel_prefixes = ("taxel_encoder.", "taxel_proj.")
+    for name, parameter in model.named_parameters():
+        is_taxel = name.startswith(taxel_prefixes)
+        if train_stage == "taxel":
+            parameter.requires_grad = is_taxel
+        elif train_stage == "backbone":
+            parameter.requires_grad = not is_taxel
+        else:
+            parameter.requires_grad = True
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    if not trainable_parameters:
+        raise RuntimeError(f"training stage {train_stage!r} selected no parameters")
+    if is_main:
+        logging.info(
+            "PyTorch training stage=%s: %d trainable tensors / %d total",
+            train_stage,
+            len(trainable_parameters),
+            sum(1 for _ in model.parameters()),
+        )
+
     if use_ddp:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -446,8 +457,11 @@ def train_loop(config: _config.TrainConfig):
         missing, unexpected = safetensors.torch.load_model(
             (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
             model_path,
-            strict=not getattr(config.model, "use_taxel", False),
+            strict=False,
         )
+        invalid_missing = [key for key in missing if not key.startswith(("taxel_encoder.", "taxel_proj."))]
+        if invalid_missing or unexpected:
+            raise RuntimeError(f"Incompatible base checkpoint: missing={invalid_missing}, unexpected={unexpected}")
         if missing or unexpected:
             logging.info(f"Loaded base weights with missing keys={missing}, unexpected keys={unexpected}")
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
@@ -460,7 +474,7 @@ def train_loop(config: _config.TrainConfig):
 
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        model.parameters(),
+        trainable_parameters,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,

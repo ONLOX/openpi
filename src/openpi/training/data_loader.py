@@ -7,7 +7,11 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+try:
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+except ModuleNotFoundError:
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -131,24 +135,38 @@ def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
     """Create a dataset for training."""
-    repo_id = data_config.repo_id
-    if repo_id is None:
-        raise ValueError("Repo ID is not set. Cannot create dataset.")
-    if repo_id == "fake":
+    if data_config.repo_id is None and data_config.repo_ids is None:
+        raise ValueError("repo_id or repo_ids must be set")
+    if data_config.repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    repo_ids = data_config.repo_ids or (typing.cast(str, data_config.repo_id),)
+    roots = data_config.lerobot_roots or (None,) * len(repo_ids)
+    if len(roots) != len(repo_ids):
+        raise ValueError("lerobot_roots must have the same length as repo_ids")
 
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    datasets = []
+    for repo_id, root in zip(repo_ids, roots, strict=True):
+        root_kwargs = {"root": root} if root is not None else {}
+        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, **root_kwargs)
+        dataset = lerobot_dataset.LeRobotDataset(
+            repo_id,
+            **root_kwargs,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+            },
+        )
+        if data_config.prompt_from_task:
+            tasks = dataset_meta.tasks
+            if not isinstance(tasks, dict):
+                task_indices = tasks["task_index"].to_dict()
+                tasks = {int(task_index): str(prompt) for prompt, task_index in task_indices.items()}
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(tasks)])
+        datasets.append(dataset)
 
-    return dataset
+    if len(datasets) == 1:
+        return datasets[0]
+    return typing.cast(Dataset, torch.utils.data.ConcatDataset(datasets))
 
 
 def create_rlds_dataset(

@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.kaihand_taxel_policy as kaihand_taxel_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -65,6 +66,10 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional collection of LeRobot repositories used as one concatenated dataset.
+    repo_ids: tuple[str, ...] | None = None
+    # Optional local roots matching repo_id/repo_ids.
+    lerobot_roots: tuple[str, ...] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -167,6 +172,7 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    repo_ids: tuple[str, ...] | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -182,6 +188,7 @@ class DataConfigFactory(abc.ABC):
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            repo_ids=self.repo_ids,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
@@ -207,6 +214,55 @@ class FakeDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         return DataConfig(repo_id=self.repo_id)
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotKaiHandTaxelDataConfig(DataConfigFactory):
+    """KaiHand two-camera, 27-D state/action, and 5x7x5x3 taxel data."""
+
+    repo_id: str | None = None
+    dataset_root: str | None = None
+    dataset_roots: tuple[str, ...] | None = None
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if self.dataset_root is not None and self.dataset_roots is not None:
+            raise ValueError("Set dataset_root or dataset_roots, not both")
+        if self.repo_id is not None and self.repo_ids is not None:
+            raise ValueError("Set repo_id or repo_ids, not both")
+        roots = self.dataset_roots
+        if self.dataset_root is not None:
+            roots = (self.dataset_root,)
+        repack = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "head": "observation.images.head",
+                            "right_wrist": "observation.images.right_wrist",
+                        },
+                        "state": "observation.state",
+                        "taxel_force": "observation.tactile.right.taxel_force",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[kaihand_taxel_policy.KaiHandTaxelInputs()],
+            outputs=[kaihand_taxel_policy.KaiHandOutputs()],
+        )
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            lerobot_roots=roots,
+            repack_transforms=repack,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=self.action_sequence_keys,
+            prompt_from_task=True,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -484,6 +540,8 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # Stage 1 trains only tactile modules; stage 2 freezes them and trains the backbone.
+    pytorch_train_stage: Literal["all", "taxel", "backbone"] = "all"
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -558,6 +616,69 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        name="pi05_kaihand_encoder_stage1",
+        project_name="openpi-tactile",
+        exp_name="encoder-stage1",
+        model=pi0_config.Pi0Config(
+            action_horizon=20,
+            pi05=True,
+            discrete_state_input=True,
+        ),
+        data=LeRobotKaiHandTaxelDataConfig(
+            repo_ids=(
+                "kaihand/usb_insert_0920_200",
+                "kaihand/install_ram_0920_200",
+                "kaihand/whiteboard_wipe_0920_200",
+                "kaihand/poker_draw_0920_200",
+            ),
+            dataset_roots=(
+                "/nas/chenxianchi/datasets/sim/usb_insert/lerobot_v3/0920_200",
+                "/nas/chenxianchi/datasets/sim/install-ram/lerobot_v3/0920_200",
+                "/nas/chenxianchi/datasets/sim/whiteboard-wipe/lerobot_v3/0920_200",
+                "/nas/chenxianchi/datasets/sim/poker-draw/lerobot_v3/0920_200",
+            ),
+            assets=AssetsConfig(asset_id="kaihand_all"),
+        ),
+        pytorch_weight_path="/nas/yeqianyu/checkpoints/pi05_base",
+        pytorch_train_stage="taxel",
+        checkpoint_base_dir="/nas/yeqianyu/checkpoints/openpi",
+        batch_size=64,
+        num_workers=4,
+        num_train_steps=30_000,
+        log_interval=100,
+        save_interval=1_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=3e-4,
+            decay_steps=30_000,
+            decay_lr=3e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+    ),
+    TrainConfig(
+        name="pi05_kaihand_poker_encoder",
+        project_name="openpi-tactile",
+        exp_name="poker-encoder",
+        model=pi0_config.Pi0Config(
+            action_horizon=20,
+            pi05=True,
+            discrete_state_input=True,
+        ),
+        data=LeRobotKaiHandTaxelDataConfig(
+            repo_id="kaihand/poker_draw_0920_200",
+            dataset_root="/nas/chenxianchi/datasets/sim/poker-draw/lerobot_v3/0920_200",
+            assets=AssetsConfig(asset_id="kaihand_poker_draw"),
+        ),
+        pytorch_weight_path="/nas/yeqianyu/checkpoints/openpi/pi05_kaihand_encoder_stage1/encoder-stage1/30000",
+        pytorch_train_stage="backbone",
+        checkpoint_base_dir="/nas/yeqianyu/checkpoints/openpi",
+        batch_size=64,
+        num_workers=4,
+        num_train_steps=30_000,
+        log_interval=100,
+        save_interval=1_000,
+    ),
     #
     # Inference Aloha configs.
     #

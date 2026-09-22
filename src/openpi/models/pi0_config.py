@@ -33,9 +33,7 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     pytorch_compile_mode: str | None = "max-autotune"
-    # PyTorch-only native taxel conditioning. Five encoded finger tokens are
-    # prepended to the PI0.5 action suffix.
-    use_taxel: bool = False
+    # Five encoded finger tokens are prepended to the PI0.5 action suffix.
     taxel_force_scale: float = 1.0
 
     def __post_init__(self):
@@ -85,8 +83,7 @@ class Pi0Config(_model.BaseModelConfig):
                 "tokenized_prompt": jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 "tokenized_prompt_mask": jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
             }
-            if self.use_taxel:
-                observation_kwargs["taxel_force"] = jax.ShapeDtypeStruct([batch_size, 5, 7, 5, 3], jnp.float32)
+            observation_kwargs["taxel_force"] = jax.ShapeDtypeStruct([batch_size, 5, 7, 5, 3], jnp.float32)
             observation_spec = _model.Observation(**observation_kwargs)
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

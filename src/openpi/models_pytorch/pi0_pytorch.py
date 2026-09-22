@@ -87,9 +87,9 @@ class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.pi05 = config.pi05
-        self.use_taxel = bool(getattr(config, "use_taxel", False))
-        self.taxel_force_scale = float(getattr(config, "taxel_force_scale", 1.0))
+        if not config.pi05:
+            raise ValueError("native taxel suffix conditioning requires PI0.5")
+        self.taxel_force_scale = config.taxel_force_scale
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -97,26 +97,18 @@ class PI0Pytorch(nn.Module):
         self.paligemma_with_expert = PaliGemmaWithExpertModel(
             paligemma_config,
             action_expert_config,
-            use_adarms=[False, True] if self.pi05 else [False, False],
+            use_adarms=[False, True],
             precision=config.dtype,
         )
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, config.action_dim)
 
-        if self.pi05:
-            self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
-            self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
-        else:
-            self.state_proj = nn.Linear(config.action_dim, action_expert_config.width)
-            self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
-            self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
+        self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
+        self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
-        if self.use_taxel:
-            if not self.pi05:
-                raise ValueError("native taxel suffix conditioning is supported only for PI0.5")
-            self.taxel_encoder = TaxelEncoder()
-            self.taxel_proj = nn.Linear(self.taxel_encoder.config.token_dim, action_expert_config.width)
+        self.taxel_encoder = TaxelEncoder()
+        self.taxel_proj = nn.Linear(self.taxel_encoder.config.token_dim, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
         if config.pytorch_compile_mode is not None:
@@ -177,7 +169,6 @@ class PI0Pytorch(nn.Module):
             list(observation.image_masks.values()),
             observation.tokenized_prompt,
             observation.tokenized_prompt_mask,
-            observation.state,
             observation.taxel_force,
         )
 
@@ -196,10 +187,6 @@ class PI0Pytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def _encode_taxel(self, taxel_force):
-        if not self.use_taxel:
-            return None
-        if taxel_force is None:
-            raise ValueError("use_taxel=True requires observation.taxel_force")
         force = taxel_force.to(device=self.taxel_proj.weight.device, dtype=torch.float32)
         force = signed_log1p(force, self.taxel_force_scale)
         tokens = self.taxel_encoder(force)
@@ -256,40 +243,15 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks
 
-    def embed_suffix(self, state, noisy_actions, timestep, taxel_tokens=None):
-        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
-        embs = []
-        pad_masks = []
-        att_masks = []
-
-        if taxel_tokens is not None:
-            embs.append(taxel_tokens)
-            bsize = taxel_tokens.shape[0]
-            taxel_mask = torch.ones(bsize, taxel_tokens.shape[1], dtype=torch.bool, device=taxel_tokens.device)
-            pad_masks.append(taxel_mask)
-            # All finger tokens share a block. Actions can attend to this block,
-            # while prefix/tactile tokens cannot attend to action tokens.
-            att_masks += [1] + ([0] * (taxel_tokens.shape[1] - 1))
-
-        if not self.pi05:
-            if self.state_proj.weight.dtype == torch.float32:
-                state = state.to(torch.float32)
-
-            # Embed state
-            def state_proj_func(state):
-                return self.state_proj(state)
-
-            state_emb = self._apply_checkpoint(state_proj_func, state)
-
-            embs.append(state_emb[:, None, :])
-            bsize = state_emb.shape[0]
-            device = state_emb.device
-
-            state_mask = torch.ones(bsize, 1, dtype=torch.bool, device=device)
-            pad_masks.append(state_mask)
-
-            # Set attention masks so that image and language inputs do not attend to state or actions
-            att_masks += [1]
+    def embed_suffix(self, noisy_actions, timestep, taxel_tokens):
+        """Embed tactile tokens, noisy actions, and timestep for the action expert."""
+        embs = [taxel_tokens]
+        bsize = taxel_tokens.shape[0]
+        taxel_mask = torch.ones(bsize, taxel_tokens.shape[1], dtype=torch.bool, device=taxel_tokens.device)
+        pad_masks = [taxel_mask]
+        # All finger tokens share a block. Actions can attend to this block,
+        # while prefix/tactile tokens cannot attend to action tokens.
+        att_masks = [1] + ([0] * (taxel_tokens.shape[1] - 1))
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(
@@ -303,29 +265,16 @@ class PI0Pytorch(nn.Module):
 
         action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
 
-        if not self.pi05:
-            time_emb = time_emb[:, None, :].expand_as(action_emb)
-            action_time_emb = torch.cat([action_emb, time_emb], dim=2)
+        # time MLP (for adaRMS)
+        def time_mlp_func(time_emb):
+            x = self.time_mlp_in(time_emb)
+            x = F.silu(x)  # swish == silu
+            x = self.time_mlp_out(x)
+            return F.silu(x)
 
-            # Apply MLP layers
-            def mlp_func(action_time_emb):
-                x = self.action_time_mlp_in(action_time_emb)
-                x = F.silu(x)  # swish == silu
-                return self.action_time_mlp_out(x)
-
-            action_time_emb = self._apply_checkpoint(mlp_func, action_time_emb)
-            adarms_cond = None
-        else:
-            # time MLP (for adaRMS)
-            def time_mlp_func(time_emb):
-                x = self.time_mlp_in(time_emb)
-                x = F.silu(x)  # swish == silu
-                x = self.time_mlp_out(x)
-                return F.silu(x)
-
-            time_emb = self._apply_checkpoint(time_mlp_func, time_emb)
-            action_time_emb = action_emb
-            adarms_cond = time_emb
+        time_emb = self._apply_checkpoint(time_mlp_func, time_emb)
+        action_time_emb = action_emb
+        adarms_cond = time_emb
 
         # Add to input tokens
         embs.append(action_time_emb)
@@ -346,9 +295,7 @@ class PI0Pytorch(nn.Module):
 
     def forward(self, observation, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
-        images, img_masks, lang_tokens, lang_masks, state, taxel_force = self._preprocess_observation(
-            observation, train=True
-        )
+        images, img_masks, lang_tokens, lang_masks, taxel_force = self._preprocess_observation(observation, train=True)
 
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -362,9 +309,7 @@ class PI0Pytorch(nn.Module):
 
         taxel_tokens = self._encode_taxel(taxel_force)
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
-            state, x_t, time, taxel_tokens=taxel_tokens
-        )
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time, taxel_tokens)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
             == torch.bfloat16
@@ -416,9 +361,7 @@ class PI0Pytorch(nn.Module):
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state, taxel_force = self._preprocess_observation(
-            observation, train=False
-        )
+        images, img_masks, lang_tokens, lang_masks, taxel_force = self._preprocess_observation(observation, train=False)
 
         taxel_tokens = self._encode_taxel(taxel_force)
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
@@ -445,7 +388,6 @@ class PI0Pytorch(nn.Module):
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
             v_t = self.denoise_step(
-                state,
                 prefix_pad_masks,
                 past_key_values,
                 x_t,
@@ -460,7 +402,6 @@ class PI0Pytorch(nn.Module):
 
     def denoise_step(
         self,
-        state,
         prefix_pad_masks,
         past_key_values,
         x_t,
@@ -468,9 +409,7 @@ class PI0Pytorch(nn.Module):
         timestep,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
-            state, x_t, timestep, taxel_tokens=taxel_tokens
-        )
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep, taxel_tokens)
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
