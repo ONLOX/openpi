@@ -52,6 +52,27 @@ _CONFIGS = [
         log_interval=100,
         save_interval=1_000,
     ),
+    training_config.TrainConfig(
+        name="pi05_kaihand_bulb_concat",
+        project_name="openpi-tactile",
+        exp_name="bulb-concat",
+        model=pi0_config.Pi0Config(
+            action_horizon=20,
+            pi05=True,
+            discrete_state_input=True,
+        ),
+        data=tactile_data_config.KaiHandTactileDataConfig(
+            repo_id="kaihand/bulb_screw_0922_200",
+            dataset_root="/nas/chenxianchi/datasets/sim/bulb-screw/lerobot_v3/0922_200",
+        ),
+        pytorch_weight_path="/nas/yeqianyu/checkpoints/pi05_base",
+        checkpoint_base_dir="/nas/yeqianyu/checkpoints/openpi",
+        batch_size=64,
+        num_workers=4,
+        num_train_steps=30_000,
+        log_interval=100,
+        save_interval=1_000,
+    ),
 ]
 
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
