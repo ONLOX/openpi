@@ -2,6 +2,7 @@ from collections.abc import Iterator, Sequence
 import logging
 import multiprocessing
 import os
+import time
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -61,6 +62,33 @@ class TransformedDataset(Dataset[T_co]):
 
     def __getitem__(self, index: SupportsIndex) -> T_co:
         return self._transform(self._dataset[index])
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+
+class RetryDataset(Dataset[T_co]):
+    """Retry transient stale NAS file handles by reopening the sample."""
+
+    def __init__(self, dataset: Dataset[T_co], max_retries: int = 3):
+        self._dataset = dataset
+        self._max_retries = max_retries
+
+    def __getitem__(self, index: SupportsIndex) -> T_co:
+        for attempt in range(self._max_retries):
+            try:
+                return self._dataset[index]
+            except OSError as error:
+                if error.errno != 116 or attempt == self._max_retries - 1:
+                    raise
+                logging.warning(
+                    "Retrying sample %s after stale file handle (%d/%d)",
+                    index,
+                    attempt + 1,
+                    self._max_retries,
+                )
+                time.sleep(0.25 * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def __len__(self) -> int:
         return len(self._dataset)
@@ -156,6 +184,7 @@ def create_torch_dataset(
                 key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
             },
         )
+        dataset = RetryDataset(dataset)
         if data_config.prompt_from_task:
             tasks = dataset_meta.tasks
             if not isinstance(tasks, dict):
