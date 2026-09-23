@@ -95,7 +95,7 @@ class Observation(Generic[ArrayT]):
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
     # Native fingertip force arrays, shaped (*b, fingers, height, width, force components).
-    taxel_force: at.Float[ArrayT, "*b f h w c"]
+    taxel_force: at.Float[ArrayT, "*b fingers taxel_h taxel_w force_dim"]
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
