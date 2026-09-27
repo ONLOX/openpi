@@ -627,16 +627,18 @@ _CONFIGS = [
         ),
         data=LeRobotKaiHandTaxelDataConfig(
             repo_ids=(
-                "kaihand/bulb_screw_0923_200",
+                "kaihand/bulb_screw_0926_200",
                 "kaihand/install_ram_0920_200",
                 "kaihand/poker_draw_0920_200",
+                "kaihand/sponge_grasp_0924_200",
                 "kaihand/usb_insert_0920_200",
                 "kaihand/whiteboard_wipe_0923_200",
             ),
             dataset_roots=(
-                "/nas/chenxianchi/datasets/sim/bulb-screw/lerobot_v3/0923_200",
+                "/nas/chenxianchi/datasets/sim/bulb-screw/lerobot_v3/0926_200",
                 "/nas/chenxianchi/datasets/sim/install-ram/lerobot_v3/0920_200",
                 "/nas/chenxianchi/datasets/sim/poker-draw/lerobot_v3/0920_200",
+                "/nas/chenxianchi/datasets/sim/sponge-grasp/lerobot_v3/0924_200",
                 "/nas/chenxianchi/datasets/sim/usb_insert/lerobot_v3/0920_200",
                 "/nas/chenxianchi/datasets/sim/whiteboard-wipe/lerobot_v3/0923_200",
             ),
