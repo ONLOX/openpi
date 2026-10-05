@@ -8,5 +8,5 @@ export PYTHONPATH="${ROOT_DIR}/src:${ROOT_DIR}"
 export LD_LIBRARY_PATH="${CONDA_ENV}/lib:${LD_LIBRARY_PATH:-}"
 
 "${TORCHRUN}" --standalone --nproc-per-node=8 \
-  scripts/train_pytorch.py pi05_kaihand_encoder_stage1 \
+  scripts/train_pytorch.py pi05_kaihand_ram_encoder \
   --overwrite

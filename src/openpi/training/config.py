@@ -683,6 +683,29 @@ _CONFIGS = [
         log_interval=100,
         save_interval=1_000,
     ),
+    TrainConfig(
+        name="pi05_kaihand_ram_encoder",
+        project_name="openpi-tactile",
+        exp_name="ram-encoder",
+        model=pi0_config.Pi0Config(
+            action_horizon=20,
+            pi05=True,
+            discrete_state_input=True,
+        ),
+        data=LeRobotKaiHandTaxelDataConfig(
+            repo_id="kaihand/install_ram_0920_200",
+            dataset_root="/nas/chenxianchi/datasets/sim/install-ram/lerobot_v3/0920_200",
+            assets=AssetsConfig(asset_id="kaihand_install_ram"),
+        ),
+        pytorch_weight_path="/nas/yeqianyu/checkpoints/openpi/pi05_kaihand_encoder_stage1/encoder-stage1/30000",
+        pytorch_train_stage="backbone",
+        checkpoint_base_dir="/nas/yeqianyu/checkpoints/openpi",
+        batch_size=64,
+        num_workers=1,
+        num_train_steps=30_000,
+        log_interval=100,
+        save_interval=1_000,
+    ),
     #
     # Inference Aloha configs.
     #
